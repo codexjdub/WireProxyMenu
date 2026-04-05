@@ -14,6 +14,18 @@ A native macOS menu bar wrapper for [wireproxy](https://github.com/pufferffish/w
 - Validates config before connecting
 - Detects port conflicts with a one-click fix
 
+## Download
+
+[Download the latest release](https://github.com/codexjdub/WireProxyMenu/releases/latest) — no need to build from source.
+
+After downloading, unzip and run:
+```bash
+xattr -cr WireProxyMenu.app
+open WireProxyMenu.app
+```
+
+> The `xattr` step is required because the app is ad-hoc signed. macOS will block it otherwise.
+
 ## Requirements
 
 - macOS 13 or later (Apple Silicon)
