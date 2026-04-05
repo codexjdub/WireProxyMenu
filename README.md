@@ -70,6 +70,10 @@ open build/WireProxyMenu.app
 
 The proxy address (e.g. `127.0.0.1:1080`) is shown in the menu when connected. Press ⌘C with the menu open to copy it to the clipboard.
 
+## Credits
+
+Built with [Claude](https://claude.ai)
+
 ## Config format
 
 Your `.conf` file must be a valid WireGuard config with a wireproxy proxy section. Example:
