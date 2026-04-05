@@ -1,6 +1,8 @@
 # WireProxyMenu
 
-A macOS menu bar app for [wireproxy](https://github.com/pufferffish/wireproxy) — run a WireGuard tunnel as a SOCKS5/HTTP proxy without root, controlled from your menu bar.
+A native macOS menu bar wrapper for [wireproxy](https://github.com/pufferffish/wireproxy) — run a WireGuard tunnel as a SOCKS5/HTTP proxy without root, controlled from your menu bar.
+
+> **wireproxy** ([github.com/pufferffish/wireproxy](https://github.com/pufferffish/wireproxy)) is an open-source tool that exposes a WireGuard tunnel as a local SOCKS5/HTTP proxy without requiring root or a system-level VPN. WireProxyMenu is a Mac GUI wrapper around it.
 
 ## Features
 
