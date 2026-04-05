@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod +x build.sh)",
+      "Bash(bash build.sh)",
+      "Bash(swift generate_icons.swift)",
+      "Bash(open /Users/dj/Documents/Codes/wireproxyMac/icon_samples)",
+      "Bash(open /Users/dj/Documents/Codes/wireproxyMac/icon_samples/B_integrated.png)",
+      "Bash(open /Users/dj/Documents/Codes/wireproxyMac/icon_samples/B_flat.png)",
+      "Bash(open /Users/dj/Documents/Codes/wireproxyMac/icon_samples/C_cylinder_clean.png)",
+      "Bash(sips -z 300 300 icon_samples/menubar_template_44.png --out icon_samples/menubar_preview_300.png)",
+      "Bash(open /Users/dj/Documents/Codes/wireproxyMac/icon_samples/menubar_preview_300.png)",
+      "Bash(open icon_samples/menubar_preview_300.png)",
+      "Bash(sips -z 22 22 /Users/dj/Documents/Codes/wireproxyMac/icon_samples/menubar_template_44.png --out /Users/dj/Documents/Codes/wireproxyMac/wireproxyMac/menubar.png)",
+      "Bash(killall Dock)",
+      "Bash(open /Users/dj/Documents/Codes/wireproxyMac/build/wireproxyMac.app)",
+      "Bash(xattr -l /Users/dj/Documents/Codes/wireproxyMac/wireproxyMac/AppIcon.icns /Users/dj/Documents/Codes/wireproxyMac/wireproxyMac/menubar.png /Users/dj/Documents/Codes/wireproxyMac/wireproxyMac/menubar@2x.png)",
+      "Bash(xattr -cr /Users/dj/Documents/Codes/wireproxyMac/wireproxyMac/)",
+      "Bash(xattr -rl /Users/dj/Documents/Codes/wireproxyMac/build/wireproxyMac.app)",
+      "Bash(bash /Users/dj/Documents/Codes/WireProxyMenu/build.sh)",
+      "Read(//Users/dj/Documents/Codes/WireProxyMenu/**)",
+      "Bash(swift /tmp/gen_connected_icon.swift)",
+      "Bash(cp /tmp/menubar_connected.png /Users/dj/Documents/Codes/WireProxyMenu/WireProxyMenu/menubar_connected.png)",
+      "Bash(cp /tmp/menubar_connected@2x.png \"/Users/dj/Documents/Codes/WireProxyMenu/WireProxyMenu/menubar_connected@2x.png\")",
+      "Bash(/Users/dj/Documents/Codes/WireProxyMenu/WireProxyMenu/wireproxy --version)"
+    ]
+  }
+}
