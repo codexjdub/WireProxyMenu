@@ -45,12 +45,14 @@ class WireproxyManager {
             return
         }
 
-        proxyAddress = parseProxyAddress(from: configURL)
+        let parsedAddress = parseProxyAddress(from: configURL)
 
-        if let addr = proxyAddress, isPortInUse(addr) {
+        if let addr = parsedAddress, isPortInUse(addr) {
             onPortConflict?(addr)
             return
         }
+
+        proxyAddress = parsedAddress
 
         let proc = Process()
         proc.executableURL = binaryURL
