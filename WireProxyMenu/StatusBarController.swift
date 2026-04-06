@@ -125,12 +125,13 @@ class StatusBarController {
         guard let path = UserDefaults.standard.string(forKey: "lastConfigPath") else { return }
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else { return }
-        setConfig(url)
 
         if let error = validateConfig(at: url) {
-            showAlert("Saved config is invalid — auto-connect skipped:\n\(error)")
+            showAlert("Saved config is invalid:\n\(error)")
             return
         }
+
+        setConfig(url)
         manager.start()
     }
 

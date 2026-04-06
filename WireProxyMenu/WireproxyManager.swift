@@ -78,6 +78,7 @@ class WireproxyManager {
             state = .connected
             onStateChange?()
         } catch {
+            proxyAddress = nil
             onFatalError?("Failed to start wireproxy: \(error.localizedDescription)")
         }
     }
@@ -103,10 +104,6 @@ class WireproxyManager {
     private func terminateProcess() {
         process?.terminate()
         process = nil
-    }
-
-    nonisolated deinit {
-        process?.terminate()
     }
 
     private func isPortInUse(_ address: String) -> Bool {
