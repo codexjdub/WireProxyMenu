@@ -343,7 +343,7 @@ class StatusBarController {
 
     private func fetchWireproxyVersion() {
         guard let binaryURL = Bundle.main.url(forAuxiliaryExecutable: "wireproxy") else { return }
-        Task.detached {
+        DispatchQueue.global(qos: .background).async {
             let proc = Process()
             proc.executableURL = binaryURL
             proc.arguments = ["--version"]
@@ -358,7 +358,7 @@ class StatusBarController {
             )?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             // Output format: "wireproxy, version 1.1.2" — take the last token
             let version = output.components(separatedBy: .whitespaces).last ?? ""
-            await MainActor.run { [weak self] in
+            Task { @MainActor [weak self] in
                 self?.versionMenuItem.title = version.isEmpty ? "wireproxy" : "wireproxy \(version)"
             }
         }
