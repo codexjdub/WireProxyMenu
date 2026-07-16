@@ -1,11 +1,13 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$SCRIPT_DIR/WireProxyMenu"
 
-# Build in /tmp to avoid iCloud re-adding extended attributes
-TMP_DIR="/tmp/WireProxyMenu_build"
+# Build in /tmp to avoid iCloud re-adding extended attributes;
+# unique per run so concurrent/multi-user builds can't collide.
+TMP_DIR="$(mktemp -d /tmp/WireProxyMenu_build.XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 APP_DIR="$TMP_DIR/WireProxyMenu.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -17,7 +19,7 @@ FINAL_DIR="$SCRIPT_DIR/build"
 SDK=$(xcrun --show-sdk-path)
 
 echo "→ Cleaning..."
-rm -rf "$TMP_DIR" "$FINAL_DIR"
+rm -rf "$FINAL_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 echo "→ Compiling Swift sources..."
@@ -56,13 +58,25 @@ sed \
   "$SRC_DIR/Info.plist" > "$CONTENTS_DIR/Info.plist"
 
 echo "→ Ad-hoc signing..."
-codesign --force --deep --sign - \
+# Sign inside-out (nested binary first) instead of deprecated --deep
+codesign --force --sign - "$MACOS_DIR/wireproxy"
+codesign --force --sign - \
   --entitlements "$SRC_DIR/WireProxyMenu.entitlements" \
   "$APP_DIR"
+
+echo "→ Creating release zip..."
+# Zip from the pristine /tmp copy so the archived app always carries a
+# clean, verifiable signature — iCloud xattrs only ever hit build/.
+ditto -c -k --keepParent "$APP_DIR" "$TMP_DIR/WireProxyMenu.zip"
 
 echo "→ Copying to build/..."
 mkdir -p "$FINAL_DIR"
 cp -r "$APP_DIR" "$FINAL_DIR/"
+cp "$TMP_DIR/WireProxyMenu.zip" "$FINAL_DIR/"
+# iCloud/Finder may re-attach xattrs on the copy, which breaks strict
+# signature validation; strip them (iCloud can still re-add later, hence
+# the xattr -cr step in the README)
+xattr -cr "$FINAL_DIR/WireProxyMenu.app"
 
 echo ""
 echo "✓ Done! App built at:"
