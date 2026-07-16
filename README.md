@@ -1,8 +1,8 @@
 # WireProxyMenu
 
-A native macOS menu bar wrapper for [wireproxy](https://github.com/pufferffish/wireproxy) — run a WireGuard tunnel as a SOCKS5/HTTP proxy without root, controlled from your menu bar.
+A native macOS menu bar wrapper for [wireproxy](https://github.com/windtf/wireproxy) — run a WireGuard tunnel as a SOCKS5/HTTP proxy without root, controlled from your menu bar.
 
-> **wireproxy** ([github.com/pufferffish/wireproxy](https://github.com/pufferffish/wireproxy)) is an open-source tool that exposes a WireGuard tunnel as a local SOCKS5/HTTP proxy without requiring root or a system-level VPN. WireProxyMenu is a Mac GUI wrapper around it.
+> **wireproxy** ([github.com/windtf/wireproxy](https://github.com/windtf/wireproxy)) is an open-source tool that exposes a WireGuard tunnel as a local SOCKS5/HTTP proxy without requiring root or a system-level VPN. WireProxyMenu is a Mac GUI wrapper around it.
 
 ## Features
 
@@ -41,7 +41,7 @@ brew install wireproxy
 cp $(which wireproxy) WireProxyMenu/wireproxy
 ```
 
-Or download the `darwin_arm64` binary from the [wireproxy releases page](https://github.com/pufferffish/wireproxy/releases), rename it to `wireproxy`, and place it in the `WireProxyMenu/` folder.
+Or download the `darwin_arm64` binary from the [wireproxy releases page](https://github.com/windtf/wireproxy/releases), rename it to `wireproxy`, and place it in the `WireProxyMenu/` folder.
 
 **2. Build**
 
