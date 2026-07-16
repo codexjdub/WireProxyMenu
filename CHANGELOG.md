@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-16
+
 ### Added
 - Support for wireproxy's new `[SNI]` proxy section in config validation
 - Leftover wireproxy processes from a crash or force-quit are detected and
@@ -71,6 +73,7 @@ Initial release.
 - Proxy address display with ⌘C copy
 - Config validation and port conflict detection
 
-[Unreleased]: https://github.com/codexjdub/WireProxyMenu/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/codexjdub/WireProxyMenu/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/codexjdub/WireProxyMenu/releases/tag/v1.1.0
 [1.0.1]: https://github.com/codexjdub/WireProxyMenu/releases/tag/v1.0.1
 [1.0.0]: https://github.com/codexjdub/WireProxyMenu/commit/03b0ce6
