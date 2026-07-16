@@ -1,8 +1,9 @@
 import AppKit
+import Darwin
 import UniformTypeIdentifiers
 
 @MainActor
-class StatusBarController {
+final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let menu: NSMenu
     let manager = WireproxyManager()
@@ -16,17 +17,18 @@ class StatusBarController {
     private var profilesMenuItem: NSMenuItem!
     private var versionMenuItem: NSMenuItem!
 
-    // Connection timer
+    // Connection start (elapsed time is rendered while the menu is open)
     private var connectedSince: Date?
-    private var connectionTimer: Timer?
+    private var menuUpdateTimer: Timer?
 
     // Copy feedback
     private var restoreProxyTitleTask: DispatchWorkItem?
     private var isShowingCopyFeedback = false
 
-    init() {
+    override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         menu = NSMenu()
+        super.init()
         setupMenu()
         setStatusTitle("Status: Disconnected")
         updateIcon(connected: false)
@@ -35,6 +37,7 @@ class StatusBarController {
         manager.onFatalError     = { [weak self] msg in self?.showAlert(msg) }
         manager.onPortConflict   = { [weak self] addr in self?.showPortConflictAlert(addr) }
 
+        manager.reapOrphanedProcess()
         fetchWireproxyVersion()
         restoreConfig()
     }
@@ -81,8 +84,26 @@ class StatusBarController {
         let quitItem = NSMenuItem(title: "Quit WireProxyMenu", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
+        menu.delegate = self
         statusItem.menu = menu
         refreshProfilesMenu()
+    }
+
+    // The elapsed-time display only ticks while it is visible. The timer
+    // must be added in .common modes — menu tracking runs the run loop in
+    // eventTracking mode, where a default-mode timer never fires.
+    func menuWillOpen(_ menu: NSMenu) {
+        updateUI()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.updateUI() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        menuUpdateTimer = timer
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuUpdateTimer?.invalidate()
+        menuUpdateTimer = nil
     }
 
     // MARK: - Config Management
@@ -103,11 +124,13 @@ class StatusBarController {
             showAlert("Invalid config: \(error)")
             return
         }
+        let wasRunning: Bool
         switch manager.state {
-        case .connected, .reconnecting: manager.stop()
-        case .disconnected: break
+        case .connected, .reconnecting: wasRunning = true
+        case .disconnected:             wasRunning = false
         }
         setConfig(url)
+        if wasRunning { manager.restart() }
     }
 
     private func setConfig(_ url: URL) {
@@ -208,9 +231,8 @@ class StatusBarController {
         case .disconnected:             wasRunning = false
         }
 
-        if wasRunning { manager.stop() }
         setConfig(url)
-        if wasRunning { manager.start() }
+        if wasRunning { manager.restart() }
     }
 
     @objc private func removeActiveProfile() {
@@ -225,9 +247,8 @@ class StatusBarController {
             case .connected, .reconnecting: wasRunning = true
             case .disconnected:             wasRunning = false
             }
-            manager.stop()
             setConfig(URL(fileURLWithPath: next))
-            if wasRunning { manager.start() }
+            if wasRunning { manager.restart() }
         } else {
             manager.stop()
             manager.configURL = nil
@@ -262,12 +283,20 @@ class StatusBarController {
         proxyMenuItem.title = "Copied!"
 
         let task = DispatchWorkItem { [weak self] in
-            guard let self, let addr = self.manager.proxyAddress else { return }
+            guard let self else { return }
             self.isShowingCopyFeedback = false
-            self.proxyMenuItem.title = "Proxy: \(addr)"
+            if let addr = self.manager.proxyAddress {
+                self.proxyMenuItem.title = "Proxy: \(addr)"
+            }
         }
         restoreProxyTitleTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: task)
+    }
+
+    private func clearCopyFeedback() {
+        restoreProxyTitleTask?.cancel()
+        restoreProxyTitleTask = nil
+        isShowingCopyFeedback = false
     }
 
     // MARK: - UI Updates
@@ -282,7 +311,7 @@ class StatusBarController {
     private func updateUI() {
         switch manager.state {
         case .connected:
-            if connectedSince == nil { startConnectionTimer() }
+            if connectedSince == nil { connectedSince = Date() }
             let elapsed = connectedSince.map { " · " + elapsedString(from: $0) } ?? ""
             setStatusTitle("Status: Connected\(elapsed)")
             connectMenuItem.title = "Disconnect"
@@ -293,14 +322,16 @@ class StatusBarController {
             }
 
         case .reconnecting(let attempt):
-            stopConnectionTimer()
+            connectedSince = nil
+            clearCopyFeedback()
             setStatusTitle("Status: Reconnecting… (attempt \(attempt))")
             connectMenuItem.title = "Cancel Reconnect"
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
 
         case .disconnected:
-            stopConnectionTimer()
+            connectedSince = nil
+            clearCopyFeedback()
             setStatusTitle("Status: Disconnected")
             connectMenuItem.title = "Connect"
             updateIcon(connected: false)
@@ -315,25 +346,14 @@ class StatusBarController {
         statusItem.button?.appearsDisabled = !connected
     }
 
-    // MARK: - Connection Timer
-
-    private func startConnectionTimer() {
-        connectedSince = Date()
-        connectionTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.updateUI() }
-        }
-    }
-
-    private func stopConnectionTimer() {
-        connectionTimer?.invalidate()
-        connectionTimer = nil
-        connectedSince = nil
-    }
+    // MARK: - Elapsed Time
 
     private func elapsedString(from date: Date) -> String {
         let elapsed = Int(-date.timeIntervalSinceNow)
-        let hours   = elapsed / 3600
+        let days    = elapsed / 86400
+        let hours   = (elapsed % 86400) / 3600
         let minutes = (elapsed % 3600) / 60
+        if days > 0    { return "\(days)d \(hours)h" }
         if hours > 0   { return "\(hours)h \(minutes)m" }
         if minutes > 0 { return "\(minutes)m" }
         return "just now"
@@ -384,17 +404,36 @@ class StatusBarController {
         activate()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        // Kill any lingering wireproxy processes
-        let kill = Process()
-        kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        kill.arguments = ["-x", "wireproxy"]
-        try? kill.run()
-        kill.waitUntilExit()
+        guard let lastColon = address.lastIndex(of: ":"),
+              let port = UInt16(address[address.index(after: lastColon)...]) else {
+            manager.start()
+            return
+        }
 
-        // Brief pause for the port to be released, then retry
-        Task {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            self.manager.start()
+        // Kill only the process(es) listening on the conflicting port,
+        // asynchronously so the main thread never blocks on lsof.
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
+        let pipe = Pipe()
+        lsof.standardOutput = pipe
+        lsof.terminationHandler = { [weak self] _ in
+            let output = String(
+                data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            for pid in output.split(whereSeparator: \.isNewline).compactMap({ pid_t($0) }) {
+                Darwin.kill(pid, SIGTERM)
+            }
+            // Brief pause for the port to be released, then retry
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                self?.manager.start()
+            }
+        }
+        guard (try? lsof.run()) != nil else {
+            manager.start()
+            return
         }
     }
 
@@ -412,13 +451,37 @@ class StatusBarController {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             return "Could not read file."
         }
-        let lower = content.lowercased()
-        guard lower.contains("[interface]") else { return "Missing [Interface] section." }
-        guard lower.contains("privatekey")  else { return "Missing PrivateKey." }
-        guard lower.contains("[peer]")      else { return "Missing [Peer] section." }
-        guard lower.contains("endpoint")    else { return "Missing Endpoint in [Peer]." }
-        guard lower.contains("[socks5]") || lower.contains("[http]") else {
-            return "Missing proxy section — add [Socks5] or [Http] with BindAddress."
+
+        // Section-aware INI walk so commented-out keys don't count.
+        var keysBySection = [String: Set<String>]()
+        var currentSection = ""
+        for rawLine in content.components(separatedBy: .newlines) {
+            var line = rawLine
+            if let comment = line.firstIndex(where: { $0 == "#" || $0 == ";" }) {
+                line = String(line[..<comment])
+            }
+            line = line.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+
+            if line.hasPrefix("["), line.hasSuffix("]") {
+                currentSection = String(line.dropFirst().dropLast())
+                    .trimmingCharacters(in: .whitespaces)
+                    .lowercased()
+                if keysBySection[currentSection] == nil {
+                    keysBySection[currentSection] = []
+                }
+            } else if let eq = line.firstIndex(of: "=") {
+                let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces).lowercased()
+                keysBySection[currentSection, default: []].insert(key)
+            }
+        }
+
+        guard let interface = keysBySection["interface"] else { return "Missing [Interface] section." }
+        guard interface.contains("privatekey") else { return "Missing PrivateKey in [Interface]." }
+        guard let peer = keysBySection["peer"] else { return "Missing [Peer] section." }
+        guard peer.contains("endpoint") else { return "Missing Endpoint in [Peer]." }
+        guard ["socks5", "http", "sni"].contains(where: { keysBySection[$0] != nil }) else {
+            return "Missing proxy section — add [Socks5], [Http], or [SNI] with BindAddress."
         }
         return nil
     }
