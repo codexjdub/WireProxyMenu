@@ -51,8 +51,8 @@ sed \
   -e 's/$(PRODUCT_BUNDLE_IDENTIFIER)/com.wireproxymenu.app/g' \
   -e 's/$(PRODUCT_NAME)/WireProxyMenu/g' \
   -e 's/$(PRODUCT_BUNDLE_PACKAGE_TYPE)/APPL/g' \
-  -e 's/$(MARKETING_VERSION)/1.1.0/g' \
-  -e 's/$(CURRENT_PROJECT_VERSION)/2/g' \
+  -e 's/$(MARKETING_VERSION)/1.2.0/g' \
+  -e 's/$(CURRENT_PROJECT_VERSION)/3/g' \
   -e 's/$(MACOSX_DEPLOYMENT_TARGET)/13.0/g' \
   -e 's/$(DEVELOPMENT_LANGUAGE)/en/g' \
   "$SRC_DIR/Info.plist" > "$CONTENTS_DIR/Info.plist"
