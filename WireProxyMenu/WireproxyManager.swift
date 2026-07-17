@@ -36,12 +36,16 @@ class WireproxyManager {
     private(set) var exitIPLatencyMs: Int?
     private(set) var exitIPFetching = false
     private(set) var tunnelStats: TunnelStats?
+    /// True when the tunnel has completed no handshake well after launch —
+    /// a near-certain sign of a wrong endpoint/key or blocked UDP.
+    private(set) var handshakeMissing = false
     private(set) var resourceUsage: ResourceUsage?
     private var lastCPUSample: (time: Date, cpuNanos: Double)?
     private var healthPort: UInt16?
     private var healthTask: Task<Void, Never>?
     private var exitIPTask: Task<Void, Never>?
     private var statsTask: Task<Void, Never>?
+    private var handshakeTask: Task<Void, Never>?
     private var process: Process?
     private var reconnectTask: Task<Void, Never>?
     private var intentionallyStopped = false
@@ -228,6 +232,7 @@ class WireproxyManager {
             onStateChange?()
             startHealthPolling()
             startExitIPFetch()
+            startHandshakeWatch()
         } catch {
             proxyAddress = nil
             state = .disconnected
@@ -269,6 +274,9 @@ class WireproxyManager {
         exitIPTask = nil
         statsTask?.cancel()
         statsTask = nil
+        handshakeTask?.cancel()
+        handshakeTask = nil
+        handshakeMissing = false
         tunnelHealthy = nil
         exitIP = nil
         exitIPLatencyMs = nil
@@ -314,6 +322,42 @@ class WireproxyManager {
         )
     }
 
+    /// Watch for the first handshake after launch. WireGuard handshakes
+    /// lazily — only when traffic flows — so this is meaningful only for
+    /// socks5/http configs, where our own exit IP fetch pushes traffic
+    /// through the tunnel right after connect. No handshake 15s in means
+    /// the tunnel never established (endpoint, key, or blocked UDP).
+    private func startHandshakeWatch() {
+        handshakeTask?.cancel()
+        handshakeMissing = false
+        guard proxyKind == "socks5" || proxyKind == "http",
+              let healthPort,
+              let url = URL(string: "http://127.0.0.1:\(healthPort)/metrics") else { return }
+
+        handshakeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard case .connected = self.state else { return }
+
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 3
+                guard let (data, response) = try? await URLSession.shared.data(for: request),
+                      (response as? HTTPURLResponse)?.statusCode == 200,
+                      let text = String(data: data, encoding: .utf8) else { continue }
+                guard !Task.isCancelled, case .connected = self.state else { return }
+
+                let missing = Self.parseTunnelStats(text).lastHandshake == nil
+                if missing != self.handshakeMissing {
+                    self.handshakeMissing = missing
+                    self.onStateChange?()
+                }
+                // A completed handshake never un-happens; the watch is done.
+                if !missing { return }
+            }
+        }
+    }
+
     /// One-shot fetch of handshake/traffic counters from wireproxy's
     /// /metrics endpoint. Called on menu open and each tick while the menu
     /// is visible — the stats line only renders when eyes are on it.
@@ -330,6 +374,9 @@ class WireproxyManager {
             guard let self, !Task.isCancelled else { return }
             guard case .connected = self.state else { return }
             self.tunnelStats = Self.parseTunnelStats(text)
+            if self.tunnelStats?.lastHandshake != nil {
+                self.handshakeMissing = false
+            }
             self.onStateChange?()
         }
     }

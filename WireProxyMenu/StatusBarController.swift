@@ -435,13 +435,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             if connectedSince == nil { connectedSince = Date() }
             let elapsed = connectedSince.map { " · " + elapsedString(from: $0) } ?? ""
             let tunnelDown = manager.tunnelHealthy == false
-            setStatusTitle(tunnelDown
-                ? "Status: Connected (tunnel down)\(elapsed)"
-                : "Status: Connected\(elapsed)")
+            let noHandshake = manager.handshakeMissing
+            let problem = tunnelDown
+                ? " (tunnel down)"
+                : (noHandshake ? " (no handshake — check endpoint)" : "")
+            setStatusTitle("Status: Connected\(problem)\(elapsed)")
             connectMenuItem.title = "Disconnect"
             connectMenuItem.isEnabled = true
             checkConnectionMenuItem.isHidden = false
-            updateIcon(connected: !tunnelDown)
+            updateIcon(connected: !tunnelDown && !noHandshake)
             if let addr = manager.proxyAddress, !isShowingCopyFeedback {
                 proxyMenuItem.title = "Proxy: \(addr)"
                 proxyMenuItem.isHidden = false

@@ -22,6 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for companion configs)
 - The Exit IP line appends the fetch round-trip latency (e.g. "· 230ms");
   copying still copies only the IP
+- A tunnel that completes no handshake within 15s of connecting shows
+  "Connected (no handshake — check endpoint)" and dims the icon — catches
+  wrong endpoints, bad keys, and blocked UDP without needing `CheckAlive`.
+  The status clears itself the moment a handshake lands. SOCKS5/HTTP configs
+  only (SNI tunnels carry no traffic to force a handshake)
 
 ### Changed
 - The Exit IP line shows "checking…" while a fetch is in flight (after
