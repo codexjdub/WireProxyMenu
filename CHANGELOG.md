@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The wireproxy version row shows the process's live CPU and memory usage
   while connected (e.g. "wireproxy 1.1.3 · 0.2% CPU · 28 MB"), sampled via
   libproc only while the menu is open
+- Probes re-run automatically after wake from sleep and on network changes
+  (debounced 2s), so the status is honest at the moments it's most likely
+  to be stale
+- The Config row is clickable: reveals the config in Finder (the original,
+  for companion configs)
+- The Exit IP line appends the fetch round-trip latency (e.g. "· 230ms");
+  copying still copies only the IP
 
 ### Changed
 - The Exit IP line shows "checking…" while a fetch is in flight (after

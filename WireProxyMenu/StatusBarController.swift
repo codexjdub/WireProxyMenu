@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import Network
 import UniformTypeIdentifiers
 
 @MainActor
@@ -25,6 +26,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var menuUpdateTimer: Timer?
     private var wireproxyVersionText = "wireproxy"
 
+    // Re-probe on wake / network change (tunnel is most likely stale then)
+    private let pathMonitor = NWPathMonitor()
+    private var probeSettleTask: Task<Void, Never>?
+
     // Copy feedback
     private var restoreProxyTitleTask: DispatchWorkItem?
     private var isShowingCopyFeedback = false
@@ -46,7 +51,31 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         manager.reapOrphanedProcess()
         sweepOrphanedCompanions()
         fetchWireproxyVersion()
+
+        // The status is most likely to be lying right after sleep or a
+        // network switch — re-run the probes once things settle.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshProbesAfterSettling() }
+        }
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshProbesAfterSettling() }
+        }
+        pathMonitor.start(queue: .global(qos: .utility))
+
         restoreConfig()
+    }
+
+    /// Coalesces bursts of wake/path events into one probe refresh, delayed
+    /// so the network has a moment to come back up.
+    private func refreshProbesAfterSettling() {
+        probeSettleTask?.cancel()
+        probeSettleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.manager.refreshProbes()
+        }
     }
 
     // MARK: - Menu Setup
@@ -75,8 +104,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        configNameMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        configNameMenuItem.isEnabled = false
+        configNameMenuItem = NSMenuItem(title: "", action: #selector(revealConfigInFinder), keyEquivalent: "")
+        configNameMenuItem.target = self
+        configNameMenuItem.toolTip = "Reveal in Finder"
         configNameMenuItem.isHidden = true
         menu.addItem(configNameMenuItem)
 
@@ -168,7 +198,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let sensitiveFile = referencedConfigPath(of: url).map { URL(fileURLWithPath: $0) } ?? url
         warnIfConfigPermissive(sensitiveFile)
         manager.configURL = url
-        configNameMenuItem.title = "Config: \(url.lastPathComponent)"
+        // Keep the label look (secondary color) even though the row is
+        // clickable — it reveals the config in Finder.
+        configNameMenuItem.attributedTitle = NSAttributedString(
+            string: "Config: \(url.lastPathComponent)",
+            attributes: [.foregroundColor: NSColor.secondaryLabelColor]
+        )
         configNameMenuItem.isHidden = false
         loadConfigMenuItem.title = "Change Config…"
         connectMenuItem.isEnabled = true
@@ -327,6 +362,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         manager.refreshProbes()
     }
 
+    @objc private func revealConfigInFinder() {
+        guard let url = manager.configURL else { return }
+        // For a companion, the file the user cares about is the original.
+        let target = referencedConfigPath(of: url).map { URL(fileURLWithPath: $0) } ?? url
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
     // MARK: - Copy Proxy
 
     @objc private func copyExitIP() {
@@ -341,8 +383,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let task = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.isShowingExitIPCopyFeedback = false
-            if let ip = self.manager.exitIP {
-                self.exitIPMenuItem.title = "Exit IP: \(ip)"
+            if let title = self.exitIPTitle() {
+                self.exitIPMenuItem.title = title
             }
         }
         restoreExitIPTitleTask = task
@@ -404,9 +446,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 proxyMenuItem.title = "Proxy: \(addr)"
                 proxyMenuItem.isHidden = false
             }
-            if let ip = manager.exitIP {
+            if let title = exitIPTitle() {
                 if !isShowingExitIPCopyFeedback {
-                    exitIPMenuItem.title = "Exit IP: \(ip)"
+                    exitIPMenuItem.title = title
                 }
                 exitIPMenuItem.isHidden = false
             } else if manager.exitIPFetching {
@@ -458,6 +500,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         image?.isTemplate = true
         statusItem.button?.image = image
         statusItem.button?.appearsDisabled = !connected
+    }
+
+    /// "Exit IP: 1.2.3.4 · 230ms" — latency is the full request round trip
+    /// through the proxy and tunnel. Copying still copies only the IP.
+    private func exitIPTitle() -> String? {
+        guard let ip = manager.exitIP else { return nil }
+        if let ms = manager.exitIPLatencyMs {
+            return "Exit IP: \(ip) · \(ms)ms"
+        }
+        return "Exit IP: \(ip)"
     }
 
     private func versionLine() -> String {

@@ -33,6 +33,7 @@ class WireproxyManager {
     /// false = wireproxy's /readyz reports the tunnel's pings are stale.
     private(set) var tunnelHealthy: Bool?
     private(set) var exitIP: String?
+    private(set) var exitIPLatencyMs: Int?
     private(set) var exitIPFetching = false
     private(set) var tunnelStats: TunnelStats?
     private(set) var resourceUsage: ResourceUsage?
@@ -270,6 +271,7 @@ class WireproxyManager {
         statsTask = nil
         tunnelHealthy = nil
         exitIP = nil
+        exitIPLatencyMs = nil
         exitIPFetching = false
         tunnelStats = nil
         resourceUsage = nil
@@ -401,6 +403,7 @@ class WireproxyManager {
     private func startExitIPFetch(initialDelayNanos: UInt64 = 2_000_000_000) {
         exitIPTask?.cancel()
         exitIP = nil
+        exitIPLatencyMs = nil
         exitIPFetching = false
         // SNI proxies can't tunnel arbitrary requests.
         guard proxyKind == "socks5" || proxyKind == "http",
@@ -423,9 +426,10 @@ class WireproxyManager {
                 if attempt > 0 { try? await Task.sleep(nanoseconds: 5_000_000_000) }
                 guard let self, !Task.isCancelled else { return }
                 guard case .connected = self.state else { return }
-                if let ip = await Self.fetchExitIP(host: host, port: port, socks: socks) {
+                if let result = await Self.fetchExitIP(host: host, port: port, socks: socks) {
                     guard !Task.isCancelled, case .connected = self.state else { return }
-                    self.exitIP = ip
+                    self.exitIP = result.ip
+                    self.exitIPLatencyMs = result.latencyMs
                     self.exitIPFetching = false
                     self.onStateChange?()
                     return
@@ -438,7 +442,7 @@ class WireproxyManager {
         }
     }
 
-    private static func fetchExitIP(host: String, port: Int, socks: Bool) async -> String? {
+    private static func fetchExitIP(host: String, port: Int, socks: Bool) async -> (ip: String, latencyMs: Int)? {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 8
         if socks {
@@ -457,12 +461,14 @@ class WireproxyManager {
         let session = URLSession(configuration: config)
         defer { session.finishTasksAndInvalidate() }
 
+        let started = Date()
         guard let url = URL(string: "https://api.ipify.org"),
               let (data, response) = try? await session.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let ip = String(data: data, encoding: .utf8)?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
               !ip.isEmpty, ip.count <= 45 else { return nil }
+        let latencyMs = Int(Date().timeIntervalSince(started) * 1000)
 
         // Only ever display an actual IP literal, never response junk.
         var v4 = in_addr()
@@ -470,7 +476,7 @@ class WireproxyManager {
         guard inet_pton(AF_INET, ip, &v4) == 1 || inet_pton(AF_INET6, ip, &v6) == 1 else {
             return nil
         }
-        return ip
+        return (ip, latencyMs)
     }
 
     /// The preferred port if it's free, else the next free port above it
