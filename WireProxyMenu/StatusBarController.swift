@@ -142,6 +142,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         case .connected, .reconnecting: wasRunning = true
         case .disconnected:             wasRunning = false
         }
+        // A companion replaced the original — don't keep a profile entry
+        // that would re-trigger the fix dialog on every selection.
+        if resolved.path != url.path { removeProfileEntry(url.path) }
         setConfig(resolved)
         if wasRunning { manager.restart() }
     }
@@ -166,8 +169,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else { return }
 
+        // A companion whose original vanished would otherwise alert at every
+        // launch — clean up both, like profile selection does.
+        if let ref = referencedConfigPath(of: url), !FileManager.default.fileExists(atPath: ref) {
+            showAlert("Original WireGuard config not found:\n\(ref)")
+            removeProfileEntry(path)
+            deleteCompanionIfOwned(path)
+            UserDefaults.standard.removeObject(forKey: "lastConfigPath")
+            return
+        }
+
         guard let resolved = resolveValidConfig(at: url) else { return }
 
+        if resolved.path != url.path { removeProfileEntry(url.path) }
         setConfig(resolved)
         manager.start()
     }
@@ -247,6 +261,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         case .disconnected:             wasRunning = false
         }
 
+        if resolved.path != url.path { removeProfileEntry(url.path) }
         setConfig(resolved)
         if wasRunning { manager.restart() }
     }
@@ -369,6 +384,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 ? "Status: Connected (tunnel down)\(elapsed)"
                 : "Status: Connected\(elapsed)")
             connectMenuItem.title = "Disconnect"
+            connectMenuItem.isEnabled = true
             checkConnectionMenuItem.isHidden = false
             updateIcon(connected: !tunnelDown)
             if let addr = manager.proxyAddress, !isShowingCopyFeedback {
@@ -389,6 +405,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             clearCopyFeedback()
             setStatusTitle("Status: Reconnecting… (attempt \(attempt))")
             connectMenuItem.title = "Cancel Reconnect"
+            connectMenuItem.isEnabled = true
             checkConnectionMenuItem.isHidden = true
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
@@ -399,6 +416,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             clearCopyFeedback()
             setStatusTitle("Status: Disconnected")
             connectMenuItem.title = "Connect"
+            // Disabled while a pending restart waits for the old process to
+            // exit — the relaunch is coming; a manual start would race it.
+            connectMenuItem.isEnabled = manager.configURL != nil && !manager.pendingRestart
             checkConnectionMenuItem.isHidden = true
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
@@ -506,7 +526,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func showAlert(_ message: String) {
         let alert = NSAlert()
-        alert.messageText = "WireProxy"
+        alert.messageText = "WireProxyMenu"
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")

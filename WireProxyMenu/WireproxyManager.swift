@@ -28,13 +28,14 @@ class WireproxyManager {
     private var process: Process?
     private var reconnectTask: Task<Void, Never>?
     private var intentionallyStopped = false
-    private var pendingRestart = false
+    private(set) var pendingRestart = false
     private let maxReconnectDelay: TimeInterval = 30
 
     func start() {
-        guard case .disconnected = state else { return }
+        // While a restart waits for the old process to die, launching now
+        // could race it for the port — the termination handler will launch.
+        guard case .disconnected = state, !pendingRestart else { return }
         intentionallyStopped = false
-        pendingRestart = false
         launchProcess()
     }
 
@@ -130,7 +131,9 @@ class WireproxyManager {
 
         let proc = Process()
         proc.executableURL = binaryURL
-        proc.arguments = ["-c", configURL.path]
+        // -s silences the verbose WireGuard device log; fatal config errors
+        // still reach stderr for the fast-exit error report.
+        proc.arguments = ["-c", configURL.path, "-s"]
 
         // Expose wireproxy's health endpoint on a free localhost port so
         // /readyz can report real tunnel state (needs CheckAlive in config).
@@ -257,6 +260,7 @@ class WireproxyManager {
         guard case .connected = state else { return }
         startHealthPolling(initialDelayNanos: 0)
         startExitIPFetch(initialDelayNanos: 0)
+        onStateChange?()  // both probes reset their values to unknown
     }
 
     private func startHealthPolling(initialDelayNanos: UInt64 = 5_000_000_000) {
@@ -348,6 +352,13 @@ class WireproxyManager {
               let ip = String(data: data, encoding: .utf8)?
                   .trimmingCharacters(in: .whitespacesAndNewlines),
               !ip.isEmpty, ip.count <= 45 else { return nil }
+
+        // Only ever display an actual IP literal, never response junk.
+        var v4 = in_addr()
+        var v6 = in6_addr()
+        guard inet_pton(AF_INET, ip, &v4) == 1 || inet_pton(AF_INET6, ip, &v6) == 1 else {
+            return nil
+        }
         return ip
     }
 

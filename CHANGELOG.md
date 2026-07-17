@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Choosing "Keep File Untouched" for a config that was already a profile no
+  longer leaves the original as a duplicate entry that re-prompts the fix
+  dialog on every selection
+- A companion whose original config vanished no longer alerts at every
+  launch; it is cleaned up on launch the same way profile selection does
+- Connect is disabled during the brief window where a restart waits for the
+  old process to exit, preventing a spurious port-conflict alert
+- The exit IP line only ever displays a valid IP literal
+- Alert titles consistently say "WireProxyMenu"
+
+### Changed
+- wireproxy runs with `-s`, silencing verbose WireGuard device logging
+  (fatal config errors still reach the error reporting)
+
 ### Added
 - Tunnel health monitoring: wireproxy is launched with its health endpoint
   (`-i`) on a free localhost port and `/readyz` is polled every 30s; when the
