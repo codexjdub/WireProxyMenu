@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import CFNetwork
 
 enum ManagerState {
     case disconnected
@@ -15,7 +16,15 @@ class WireproxyManager {
     var onPortConflict: ((String) -> Void)?  // passes the conflicting address
 
     private(set) var proxyAddress: String?
+    private(set) var proxyKind: String?  // "socks5" | "http" | "sni"
     private(set) var state: ManagerState = .disconnected
+    /// nil = unknown (config has no CheckAlive, or not yet polled);
+    /// false = wireproxy's /readyz reports the tunnel's pings are stale.
+    private(set) var tunnelHealthy: Bool?
+    private(set) var exitIP: String?
+    private var healthPort: UInt16?
+    private var healthTask: Task<Void, Never>?
+    private var exitIPTask: Task<Void, Never>?
     private var process: Process?
     private var reconnectTask: Task<Void, Never>?
     private var intentionallyStopped = false
@@ -34,6 +43,7 @@ class WireproxyManager {
         pendingRestart = false
         reconnectTask?.cancel()
         reconnectTask = nil
+        stopProbes()
         terminateProcess()
         proxyAddress = nil
         state = .disconnected
@@ -57,6 +67,7 @@ class WireproxyManager {
 
         pendingRestart = true
         intentionallyStopped = true
+        stopProbes()
         proxyAddress = nil
         state = .disconnected
         onStateChange?()
@@ -111,13 +122,22 @@ class WireproxyManager {
         }
 
         // Display the address apps most commonly consume, not file order.
-        proxyAddress = proxies.first(where: { $0.section == "socks5" })?.address
-            ?? proxies.first(where: { $0.section == "http" })?.address
-            ?? proxies.first?.address
+        let preferred = proxies.first(where: { $0.section == "socks5" })
+            ?? proxies.first(where: { $0.section == "http" })
+            ?? proxies.first
+        proxyAddress = preferred?.address
+        proxyKind = preferred?.section
 
         let proc = Process()
         proc.executableURL = binaryURL
         proc.arguments = ["-c", configURL.path]
+
+        // Expose wireproxy's health endpoint on a free localhost port so
+        // /readyz can report real tunnel state (needs CheckAlive in config).
+        healthPort = findFreePort()
+        if let healthPort {
+            proc.arguments?.append(contentsOf: ["-i", "127.0.0.1:\(healthPort)"])
+        }
 
         // Drain stderr continuously so a chatty process can't fill the pipe
         // buffer and stall; keep only the tail for error reporting.
@@ -142,6 +162,7 @@ class WireproxyManager {
                 // must not touch state or trigger a reconnect.
                 guard let self, self.process === proc else { return }
                 self.process = nil
+                self.stopProbes()
                 UserDefaults.standard.removeObject(forKey: "wireproxyPID")
 
                 if self.pendingRestart {
@@ -185,6 +206,8 @@ class WireproxyManager {
             UserDefaults.standard.set(Int(proc.processIdentifier), forKey: "wireproxyPID")
             state = .connected
             onStateChange?()
+            startHealthPolling()
+            startExitIPFetch()
         } catch {
             proxyAddress = nil
             state = .disconnected
@@ -215,6 +238,136 @@ class WireproxyManager {
         process?.terminate()
         process = nil
         UserDefaults.standard.removeObject(forKey: "wireproxyPID")
+    }
+
+    // MARK: - Tunnel health & exit IP
+
+    private func stopProbes() {
+        healthTask?.cancel()
+        healthTask = nil
+        exitIPTask?.cancel()
+        exitIPTask = nil
+        tunnelHealthy = nil
+        exitIP = nil
+    }
+
+    private func startHealthPolling() {
+        healthTask?.cancel()
+        tunnelHealthy = nil
+        guard let healthPort,
+              let url = URL(string: "http://127.0.0.1:\(healthPort)/readyz") else { return }
+
+        healthTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            while !Task.isCancelled {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 5
+                var healthy: Bool?
+                if let (data, response) = try? await URLSession.shared.data(for: request),
+                   let http = response as? HTTPURLResponse {
+                    let body = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    // Empty ping record means no CheckAlive in the config —
+                    // /readyz is then always 200 and proves nothing.
+                    healthy = (body == "{}" || body == "null") ? nil : (http.statusCode == 200)
+                }
+                guard let self, !Task.isCancelled else { return }
+                guard case .connected = self.state else { return }
+                if self.tunnelHealthy != healthy {
+                    self.tunnelHealthy = healthy
+                    self.onStateChange?()
+                }
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+            }
+        }
+    }
+
+    private func startExitIPFetch() {
+        exitIPTask?.cancel()
+        exitIP = nil
+        // SNI proxies can't tunnel arbitrary requests.
+        guard proxyKind == "socks5" || proxyKind == "http",
+              let address = proxyAddress,
+              let lastColon = address.lastIndex(of: ":"),
+              let port = Int(address[address.index(after: lastColon)...]) else { return }
+
+        var host = String(address[..<lastColon])
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if host.isEmpty || host == "0.0.0.0" || host == "::" { host = "127.0.0.1" }
+
+        let socks = proxyKind == "socks5"
+        exitIPTask = Task { [weak self] in
+            // First handshake needs a moment; retry while the tunnel warms up.
+            for attempt in 0..<3 {
+                try? await Task.sleep(nanoseconds: attempt == 0 ? 2_000_000_000 : 5_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard case .connected = self.state else { return }
+                if let ip = await Self.fetchExitIP(host: host, port: port, socks: socks) {
+                    guard !Task.isCancelled, case .connected = self.state else { return }
+                    self.exitIP = ip
+                    self.onStateChange?()
+                    return
+                }
+            }
+        }
+    }
+
+    private static func fetchExitIP(host: String, port: Int, socks: Bool) async -> String? {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        if socks {
+            config.connectionProxyDictionary = [
+                kCFNetworkProxiesSOCKSEnable as String: 1,
+                kCFNetworkProxiesSOCKSProxy as String: host,
+                kCFNetworkProxiesSOCKSPort as String: port,
+            ]
+        } else {
+            config.connectionProxyDictionary = [
+                kCFNetworkProxiesHTTPSEnable as String: 1,
+                kCFNetworkProxiesHTTPSProxy as String: host,
+                kCFNetworkProxiesHTTPSPort as String: port,
+            ]
+        }
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+
+        guard let url = URL(string: "https://api.ipify.org"),
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let ip = String(data: data, encoding: .utf8)?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !ip.isEmpty, ip.count <= 45 else { return nil }
+        return ip
+    }
+
+    private func findFreePort() -> UInt16? {
+        let sock = socket(AF_INET, SOCK_STREAM, 0)
+        guard sock >= 0 else { return nil }
+        defer { Darwin.close(sock) }
+
+        var addr = sockaddr_in()
+        memset(&addr, 0, MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0  // kernel assigns a free port
+        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0 else { return nil }
+
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let got = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(sock, $0, &len)
+            }
+        }
+        guard got == 0 else { return nil }
+        return UInt16(bigEndian: addr.sin_port)
     }
 
     private func isPortInUse(_ address: String) -> Bool {

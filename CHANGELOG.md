@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Tunnel health monitoring: wireproxy is launched with its health endpoint
+  (`-i`) on a free localhost port and `/readyz` is polled every 30s; when the
+  config has `CheckAlive`, a stale tunnel shows "Connected (tunnel down)" and
+  dims the menu bar icon (without `CheckAlive`, health is reported as unknown,
+  never falsely OK)
+- Exit IP display: after connecting, the public IP is fetched through the
+  proxy itself (SOCKS5 or HTTP) and shown in the menu; ⇧⌘C or click copies it.
+  Skipped for SNI-only configs, which can't proxy arbitrary requests
+
 ## [1.1.0] - 2026-07-16
 
 ### Added

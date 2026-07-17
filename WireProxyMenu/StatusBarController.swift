@@ -11,6 +11,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // Menu items
     private var statusMenuItem: NSMenuItem!
     private var proxyMenuItem: NSMenuItem!
+    private var exitIPMenuItem: NSMenuItem!
     private var connectMenuItem: NSMenuItem!
     private var configNameMenuItem: NSMenuItem!   // disabled label: "Config: file.conf"
     private var loadConfigMenuItem: NSMenuItem!   // always "Load Config…"
@@ -24,6 +25,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // Copy feedback
     private var restoreProxyTitleTask: DispatchWorkItem?
     private var isShowingCopyFeedback = false
+    private var restoreExitIPTitleTask: DispatchWorkItem?
+    private var isShowingExitIPCopyFeedback = false
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -54,6 +57,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         proxyMenuItem.target = self
         proxyMenuItem.isHidden = true
         menu.addItem(proxyMenuItem)
+
+        exitIPMenuItem = NSMenuItem(title: "", action: #selector(copyExitIP), keyEquivalent: "c")
+        exitIPMenuItem.keyEquivalentModifierMask = [.command, .shift]
+        exitIPMenuItem.target = self
+        exitIPMenuItem.isHidden = true
+        menu.addItem(exitIPMenuItem)
 
         menu.addItem(.separator())
 
@@ -273,6 +282,26 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     // MARK: - Copy Proxy
 
+    @objc private func copyExitIP() {
+        guard let ip = manager.exitIP else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(ip, forType: .string)
+
+        restoreExitIPTitleTask?.cancel()
+        isShowingExitIPCopyFeedback = true
+        exitIPMenuItem.title = "Copied!"
+
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.isShowingExitIPCopyFeedback = false
+            if let ip = self.manager.exitIP {
+                self.exitIPMenuItem.title = "Exit IP: \(ip)"
+            }
+        }
+        restoreExitIPTitleTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: task)
+    }
+
     @objc private func copyProxyAddress() {
         guard let addr = manager.proxyAddress else { return }
         NSPasteboard.general.clearContents()
@@ -297,6 +326,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         restoreProxyTitleTask?.cancel()
         restoreProxyTitleTask = nil
         isShowingCopyFeedback = false
+        restoreExitIPTitleTask?.cancel()
+        restoreExitIPTitleTask = nil
+        isShowingExitIPCopyFeedback = false
     }
 
     // MARK: - UI Updates
@@ -313,12 +345,23 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         case .connected:
             if connectedSince == nil { connectedSince = Date() }
             let elapsed = connectedSince.map { " · " + elapsedString(from: $0) } ?? ""
-            setStatusTitle("Status: Connected\(elapsed)")
+            let tunnelDown = manager.tunnelHealthy == false
+            setStatusTitle(tunnelDown
+                ? "Status: Connected (tunnel down)\(elapsed)"
+                : "Status: Connected\(elapsed)")
             connectMenuItem.title = "Disconnect"
-            updateIcon(connected: true)
+            updateIcon(connected: !tunnelDown)
             if let addr = manager.proxyAddress, !isShowingCopyFeedback {
                 proxyMenuItem.title = "Proxy: \(addr)"
                 proxyMenuItem.isHidden = false
+            }
+            if let ip = manager.exitIP {
+                if !isShowingExitIPCopyFeedback {
+                    exitIPMenuItem.title = "Exit IP: \(ip)"
+                }
+                exitIPMenuItem.isHidden = false
+            } else {
+                exitIPMenuItem.isHidden = true
             }
 
         case .reconnecting(let attempt):
@@ -328,6 +371,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             connectMenuItem.title = "Cancel Reconnect"
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
+            exitIPMenuItem.isHidden = true
 
         case .disconnected:
             connectedSince = nil
@@ -336,6 +380,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             connectMenuItem.title = "Connect"
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
+            exitIPMenuItem.isHidden = true
         }
     }
 
