@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-16
+
 ### Added
 - Tunnel stats line in the menu while connected: last handshake age and
   bytes received/sent through the tunnel (from wireproxy's /metrics),
@@ -144,7 +146,8 @@ Initial release.
 - Proxy address display with ⌘C copy
 - Config validation and port conflict detection
 
-[Unreleased]: https://github.com/codexjdub/WireProxyMenu/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/codexjdub/WireProxyMenu/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/codexjdub/WireProxyMenu/releases/tag/v1.3.0
 [1.2.0]: https://github.com/codexjdub/WireProxyMenu/releases/tag/v1.2.0
 [1.1.0]: https://github.com/codexjdub/WireProxyMenu/releases/tag/v1.1.0
 [1.0.1]: https://github.com/codexjdub/WireProxyMenu/releases/tag/v1.0.1
