@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Tunnel stats line in the menu while connected: last handshake age and
+  bytes received/sent through the tunnel (from wireproxy's /metrics),
+  refreshed each second while the menu is open. A recent handshake proves
+  the tunnel is alive even without `CheckAlive`; on an idle tunnel a
+  growing age is normal
+- The wireproxy version row shows the process's live CPU and memory usage
+  while connected (e.g. "wireproxy 1.1.3 · 0.2% CPU · 28 MB"), sampled via
+  libproc only while the menu is open
+
+### Changed
+- The Exit IP line shows "checking…" while a fetch is in flight (after
+  connecting or clicking Check Connection), so a manual check is visibly
+  doing something when the menu is reopened
+
 ## [1.2.0] - 2026-07-16
 
 ### Fixed

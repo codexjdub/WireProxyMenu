@@ -12,6 +12,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var statusMenuItem: NSMenuItem!
     private var proxyMenuItem: NSMenuItem!
     private var exitIPMenuItem: NSMenuItem!
+    private var statsMenuItem: NSMenuItem!
     private var connectMenuItem: NSMenuItem!
     private var checkConnectionMenuItem: NSMenuItem!
     private var configNameMenuItem: NSMenuItem!   // disabled label: "Config: file.conf"
@@ -22,6 +23,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // Connection start (elapsed time is rendered while the menu is open)
     private var connectedSince: Date?
     private var menuUpdateTimer: Timer?
+    private var wireproxyVersionText = "wireproxy"
 
     // Copy feedback
     private var restoreProxyTitleTask: DispatchWorkItem?
@@ -66,6 +68,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         exitIPMenuItem.isHidden = true
         menu.addItem(exitIPMenuItem)
 
+        statsMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        statsMenuItem.isEnabled = false
+        statsMenuItem.isHidden = true
+        menu.addItem(statsMenuItem)
+
         menu.addItem(.separator())
 
         configNameMenuItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -109,9 +116,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // must be added in .common modes — menu tracking runs the run loop in
     // eventTracking mode, where a default-mode timer never fires.
     func menuWillOpen(_ menu: NSMenu) {
+        manager.refreshTunnelStats()
+        manager.sampleResourceUsage()
         updateUI()
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.updateUI() }
+            Task { @MainActor [weak self] in
+                self?.manager.refreshTunnelStats()
+                self?.manager.sampleResourceUsage()
+                self?.updateUI()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         menuUpdateTimer = timer
@@ -396,9 +409,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                     exitIPMenuItem.title = "Exit IP: \(ip)"
                 }
                 exitIPMenuItem.isHidden = false
+            } else if manager.exitIPFetching {
+                exitIPMenuItem.title = "Exit IP: checking…"
+                exitIPMenuItem.isHidden = false
             } else {
                 exitIPMenuItem.isHidden = true
             }
+            if let stats = manager.tunnelStats {
+                statsMenuItem.title = statsLine(stats)
+                statsMenuItem.isHidden = false
+            } else {
+                statsMenuItem.isHidden = true
+            }
+            versionMenuItem.title = versionLine()
 
         case .reconnecting(let attempt):
             connectedSince = nil
@@ -410,6 +433,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
             exitIPMenuItem.isHidden = true
+            statsMenuItem.isHidden = true
+            versionMenuItem.title = wireproxyVersionText
 
         case .disconnected:
             connectedSince = nil
@@ -423,6 +448,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
             exitIPMenuItem.isHidden = true
+            statsMenuItem.isHidden = true
+            versionMenuItem.title = wireproxyVersionText
         }
     }
 
@@ -431,6 +458,39 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         image?.isTemplate = true
         statusItem.button?.image = image
         statusItem.button?.appearsDisabled = !connected
+    }
+
+    private func versionLine() -> String {
+        guard let usage = manager.resourceUsage else { return wireproxyVersionText }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .memory
+        var parts = [wireproxyVersionText]
+        if let cpu = usage.cpuPercent {
+            parts.append(String(format: "%.1f%% CPU", cpu))
+        }
+        parts.append(formatter.string(fromByteCount: usage.residentBytes))
+        return parts.joined(separator: " · ")
+    }
+
+    private func statsLine(_ stats: TunnelStats) -> String {
+        let handshake: String
+        if let last = stats.lastHandshake {
+            let age = max(0, Int(-last.timeIntervalSinceNow))
+            if age < 60 {
+                handshake = "Handshake \(age)s ago"
+            } else if age < 3600 {
+                handshake = "Handshake \(age / 60)m ago"
+            } else {
+                handshake = "Handshake \(age / 3600)h \((age % 3600) / 60)m ago"
+            }
+        } else {
+            handshake = "No handshake yet"
+        }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let down = formatter.string(fromByteCount: stats.rxBytes)
+        let up = formatter.string(fromByteCount: stats.txBytes)
+        return "\(handshake) · ▼ \(down) ▲ \(up)"
     }
 
     // MARK: - Elapsed Time
@@ -466,7 +526,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             // Output format: "wireproxy, version 1.1.2" — take the last token
             let version = output.components(separatedBy: .whitespaces).last ?? ""
             Task { @MainActor [weak self] in
-                self?.versionMenuItem.title = version.isEmpty ? "wireproxy" : "wireproxy \(version)"
+                guard let self else { return }
+                self.wireproxyVersionText = version.isEmpty ? "wireproxy" : "wireproxy \(version)"
+                self.updateUI()
             }
         }
     }

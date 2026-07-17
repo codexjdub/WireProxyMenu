@@ -8,6 +8,17 @@ enum ManagerState {
     case reconnecting(attempt: Int)
 }
 
+struct TunnelStats {
+    var lastHandshake: Date?  // nil = no handshake completed yet
+    var rxBytes: Int64
+    var txBytes: Int64
+}
+
+struct ResourceUsage {
+    var cpuPercent: Double?  // nil until two samples exist to diff
+    var residentBytes: Int64
+}
+
 @MainActor
 class WireproxyManager {
     var configURL: URL?
@@ -22,9 +33,14 @@ class WireproxyManager {
     /// false = wireproxy's /readyz reports the tunnel's pings are stale.
     private(set) var tunnelHealthy: Bool?
     private(set) var exitIP: String?
+    private(set) var exitIPFetching = false
+    private(set) var tunnelStats: TunnelStats?
+    private(set) var resourceUsage: ResourceUsage?
+    private var lastCPUSample: (time: Date, cpuNanos: Double)?
     private var healthPort: UInt16?
     private var healthTask: Task<Void, Never>?
     private var exitIPTask: Task<Void, Never>?
+    private var statsTask: Task<Void, Never>?
     private var process: Process?
     private var reconnectTask: Task<Void, Never>?
     private var intentionallyStopped = false
@@ -250,8 +266,95 @@ class WireproxyManager {
         healthTask = nil
         exitIPTask?.cancel()
         exitIPTask = nil
+        statsTask?.cancel()
+        statsTask = nil
         tunnelHealthy = nil
         exitIP = nil
+        exitIPFetching = false
+        tunnelStats = nil
+        resourceUsage = nil
+        lastCPUSample = nil
+    }
+
+    /// Sample wireproxy's CPU and memory via libproc. Synchronous and cheap;
+    /// called on the menu's 1s tick, so CPU% is the usage over the last tick.
+    func sampleResourceUsage() {
+        guard case .connected = state, let pid = process?.processIdentifier else { return }
+
+        var usage = rusage_info_v4()
+        let result = withUnsafeMutablePointer(to: &usage) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(pid, RUSAGE_INFO_V4, $0)
+            }
+        }
+        guard result == 0 else { return }
+
+        // ri_*_time is in mach absolute time units, not nanoseconds.
+        var timebase = mach_timebase_info_data_t()
+        mach_timebase_info(&timebase)
+        let cpuNanos = Double(usage.ri_user_time &+ usage.ri_system_time)
+            * Double(timebase.numer) / Double(timebase.denom)
+
+        var cpuPercent: Double?
+        let now = Date()
+        if let last = lastCPUSample {
+            let wall = now.timeIntervalSince(last.time)
+            // Only trust a delta from a recent sample; after a gap (menu was
+            // closed) this tick just re-baselines.
+            if wall > 0.2, wall < 5 {
+                cpuPercent = max(0, (cpuNanos - last.cpuNanos) / (wall * 1_000_000_000) * 100)
+            }
+        }
+        lastCPUSample = (now, cpuNanos)
+        resourceUsage = ResourceUsage(
+            cpuPercent: cpuPercent,
+            residentBytes: Int64(usage.ri_resident_size)
+        )
+    }
+
+    /// One-shot fetch of handshake/traffic counters from wireproxy's
+    /// /metrics endpoint. Called on menu open and each tick while the menu
+    /// is visible — the stats line only renders when eyes are on it.
+    func refreshTunnelStats() {
+        guard case .connected = state, let healthPort,
+              let url = URL(string: "http://127.0.0.1:\(healthPort)/metrics") else { return }
+        statsTask?.cancel()
+        statsTask = Task { [weak self] in
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 3
+            guard let (data, response) = try? await URLSession.shared.data(for: request),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let text = String(data: data, encoding: .utf8) else { return }
+            guard let self, !Task.isCancelled else { return }
+            guard case .connected = self.state else { return }
+            self.tunnelStats = Self.parseTunnelStats(text)
+            self.onStateChange?()
+        }
+    }
+
+    /// wireproxy's /metrics is WireGuard's UAPI dump (secrets redacted):
+    /// key=value lines, one block per peer.
+    private static func parseTunnelStats(_ text: String) -> TunnelStats {
+        var latestHandshake: Int64 = 0
+        var rx: Int64 = 0
+        var tx: Int64 = 0
+        for line in text.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2, let value = Int64(parts[1]) else { continue }
+            switch parts[0] {
+            case "last_handshake_time_sec": latestHandshake = max(latestHandshake, value)
+            case "rx_bytes":                rx += value
+            case "tx_bytes":                tx += value
+            default: break
+            }
+        }
+        return TunnelStats(
+            lastHandshake: latestHandshake > 0
+                ? Date(timeIntervalSince1970: TimeInterval(latestHandshake))
+                : nil,
+            rxBytes: rx,
+            txBytes: tx
+        )
     }
 
     /// Re-run the health poll and exit IP fetch immediately (e.g. from a
@@ -260,6 +363,7 @@ class WireproxyManager {
         guard case .connected = state else { return }
         startHealthPolling(initialDelayNanos: 0)
         startExitIPFetch(initialDelayNanos: 0)
+        refreshTunnelStats()
         onStateChange?()  // both probes reset their values to unknown
     }
 
@@ -297,6 +401,7 @@ class WireproxyManager {
     private func startExitIPFetch(initialDelayNanos: UInt64 = 2_000_000_000) {
         exitIPTask?.cancel()
         exitIP = nil
+        exitIPFetching = false
         // SNI proxies can't tunnel arbitrary requests.
         guard proxyKind == "socks5" || proxyKind == "http",
               let address = proxyAddress,
@@ -310,6 +415,7 @@ class WireproxyManager {
         if host.isEmpty || host == "0.0.0.0" || host == "::" { host = "127.0.0.1" }
 
         let socks = proxyKind == "socks5"
+        exitIPFetching = true
         exitIPTask = Task { [weak self] in
             // First handshake needs a moment; retry while the tunnel warms up.
             try? await Task.sleep(nanoseconds: initialDelayNanos)
@@ -320,10 +426,15 @@ class WireproxyManager {
                 if let ip = await Self.fetchExitIP(host: host, port: port, socks: socks) {
                     guard !Task.isCancelled, case .connected = self.state else { return }
                     self.exitIP = ip
+                    self.exitIPFetching = false
                     self.onStateChange?()
                     return
                 }
             }
+            // All attempts failed — stop advertising a check in progress.
+            guard let self, !Task.isCancelled else { return }
+            self.exitIPFetching = false
+            self.onStateChange?()
         }
     }
 
