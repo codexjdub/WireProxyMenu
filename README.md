@@ -11,7 +11,9 @@ A native macOS menu bar wrapper for [wireproxy](https://github.com/windtf/wirepr
 - Multiple config profiles
 - Auto-reconnects if wireproxy exits unexpectedly
 - Shows proxy address and connection time
-- Validates config before connecting
+- Shows your exit IP, fetched through the tunnel itself
+- Monitors tunnel health and flags a dead tunnel (see [Tunnel health](#tunnel-health))
+- Validates config before connecting, and warns if the file is readable by other users
 - Detects port conflicts with a one-click fix
 
 ## Download
@@ -69,6 +71,19 @@ open build/WireProxyMenu.app
 3. Click **Connect**
 
 The proxy address (e.g. `127.0.0.1:1080`) is shown in the menu when connected. Press ⌘C with the menu open to copy it to the clipboard.
+
+A few seconds after connecting, the menu also shows your exit IP — the public address your traffic leaves from, fetched through the tunnel itself. Press ⇧⌘C to copy it. Use **Check Connection** to re-fetch it and re-check tunnel health on demand.
+
+## Tunnel health
+
+"Connected" normally only means the wireproxy process is running. To let the app detect a tunnel that is up but not passing traffic, add these lines to the `[Interface]` section of your config:
+
+```ini
+CheckAlive = 1.1.1.1
+CheckAliveInterval = 30
+```
+
+wireproxy will ping that address through the tunnel, and the app polls the result every 30 seconds. If the pings go stale, the menu shows **Connected (tunnel down)** and the menu bar icon dims. Without `CheckAlive`, health is unknown and the app stays quiet rather than guessing.
 
 ## Credits
 

@@ -251,14 +251,22 @@ class WireproxyManager {
         exitIP = nil
     }
 
-    private func startHealthPolling() {
+    /// Re-run the health poll and exit IP fetch immediately (e.g. from a
+    /// user-triggered "Check Connection").
+    func refreshProbes() {
+        guard case .connected = state else { return }
+        startHealthPolling(initialDelayNanos: 0)
+        startExitIPFetch(initialDelayNanos: 0)
+    }
+
+    private func startHealthPolling(initialDelayNanos: UInt64 = 5_000_000_000) {
         healthTask?.cancel()
         tunnelHealthy = nil
         guard let healthPort,
               let url = URL(string: "http://127.0.0.1:\(healthPort)/readyz") else { return }
 
         healthTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await Task.sleep(nanoseconds: initialDelayNanos)
             while !Task.isCancelled {
                 var request = URLRequest(url: url)
                 request.timeoutInterval = 5
@@ -282,7 +290,7 @@ class WireproxyManager {
         }
     }
 
-    private func startExitIPFetch() {
+    private func startExitIPFetch(initialDelayNanos: UInt64 = 2_000_000_000) {
         exitIPTask?.cancel()
         exitIP = nil
         // SNI proxies can't tunnel arbitrary requests.
@@ -300,8 +308,9 @@ class WireproxyManager {
         let socks = proxyKind == "socks5"
         exitIPTask = Task { [weak self] in
             // First handshake needs a moment; retry while the tunnel warms up.
+            try? await Task.sleep(nanoseconds: initialDelayNanos)
             for attempt in 0..<3 {
-                try? await Task.sleep(nanoseconds: attempt == 0 ? 2_000_000_000 : 5_000_000_000)
+                if attempt > 0 { try? await Task.sleep(nanoseconds: 5_000_000_000) }
                 guard let self, !Task.isCancelled else { return }
                 guard case .connected = self.state else { return }
                 if let ip = await Self.fetchExitIP(host: host, port: port, socks: socks) {

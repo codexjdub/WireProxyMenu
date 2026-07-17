@@ -13,6 +13,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var proxyMenuItem: NSMenuItem!
     private var exitIPMenuItem: NSMenuItem!
     private var connectMenuItem: NSMenuItem!
+    private var checkConnectionMenuItem: NSMenuItem!
     private var configNameMenuItem: NSMenuItem!   // disabled label: "Config: file.conf"
     private var loadConfigMenuItem: NSMenuItem!   // always "Load Config…"
     private var profilesMenuItem: NSMenuItem!
@@ -84,6 +85,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         connectMenuItem.isEnabled = false
         menu.addItem(connectMenuItem)
 
+        checkConnectionMenuItem = NSMenuItem(title: "Check Connection", action: #selector(checkConnection), keyEquivalent: "")
+        checkConnectionMenuItem.target = self
+        checkConnectionMenuItem.isHidden = true
+        menu.addItem(checkConnectionMenuItem)
+
         menu.addItem(.separator())
 
         versionMenuItem = NSMenuItem(title: "wireproxy", action: nil, keyEquivalent: "")
@@ -143,6 +149,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     private func setConfig(_ url: URL) {
+        warnIfConfigPermissive(url)
         manager.configURL = url
         configNameMenuItem.title = "Config: \(url.lastPathComponent)"
         configNameMenuItem.isHidden = false
@@ -280,6 +287,10 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
+    @objc private func checkConnection() {
+        manager.refreshProbes()
+    }
+
     // MARK: - Copy Proxy
 
     @objc private func copyExitIP() {
@@ -350,6 +361,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 ? "Status: Connected (tunnel down)\(elapsed)"
                 : "Status: Connected\(elapsed)")
             connectMenuItem.title = "Disconnect"
+            checkConnectionMenuItem.isHidden = false
             updateIcon(connected: !tunnelDown)
             if let addr = manager.proxyAddress, !isShowingCopyFeedback {
                 proxyMenuItem.title = "Proxy: \(addr)"
@@ -369,6 +381,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             clearCopyFeedback()
             setStatusTitle("Status: Reconnecting… (attempt \(attempt))")
             connectMenuItem.title = "Cancel Reconnect"
+            checkConnectionMenuItem.isHidden = true
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
             exitIPMenuItem.isHidden = true
@@ -378,6 +391,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             clearCopyFeedback()
             setStatusTitle("Status: Disconnected")
             connectMenuItem.title = "Connect"
+            checkConnectionMenuItem.isHidden = true
             updateIcon(connected: false)
             proxyMenuItem.isHidden = true
             exitIPMenuItem.isHidden = true
@@ -490,6 +504,41 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         alert.addButton(withTitle: "OK")
         activate()
         alert.runModal()
+    }
+
+    /// Configs contain WireGuard private keys; offer to lock down files that
+    /// other users on the machine can read. "Ignore" is remembered per path.
+    private func warnIfConfigPermissive(_ url: URL) {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let perms = attrs[.posixPermissions] as? NSNumber else { return }
+        let mode = perms.uint16Value
+        guard mode & 0o077 != 0 else { return }  // group/other already have no access
+
+        let ignoredKey = "permissionWarningIgnored"
+        let ignored = UserDefaults.standard.stringArray(forKey: ignoredKey) ?? []
+        guard !ignored.contains(url.path) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Config Readable by Other Users"
+        alert.informativeText = "\(url.lastPathComponent) contains your WireGuard private key, but its permissions (\(String(format: "%o", mode))) allow other users on this Mac to read it. Restrict it to your user only?"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Fix Permissions")
+        alert.addButton(withTitle: "Ignore")
+        activate()
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            UserDefaults.standard.set(ignored + [url.path], forKey: ignoredKey)
+            return
+        }
+
+        do {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: url.path
+            )
+        } catch {
+            showAlert("Could not change permissions: \(error.localizedDescription)")
+        }
     }
 
     private func validateConfig(at url: URL) -> String? {

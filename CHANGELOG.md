@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Exit IP display: after connecting, the public IP is fetched through the
   proxy itself (SOCKS5 or HTTP) and shown in the menu; ⇧⌘C or click copies it.
   Skipped for SNI-only configs, which can't proxy arbitrary requests
+- "Check Connection" menu item to re-run the health poll and exit IP fetch
+  on demand while connected
+- Loading a config that other users on the Mac can read offers a one-click
+  permissions fix (chmod 600), since configs contain WireGuard private keys;
+  "Ignore" is remembered per file
+- README documents tunnel health, `CheckAlive` setup, and the exit IP line
 
 ## [1.1.0] - 2026-07-16
 
