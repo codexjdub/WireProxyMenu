@@ -26,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a proxy section missing its `BindAddress` gets the same treatment. The
   suggested port is 1080 only if it's actually free, otherwise the next
   free port
+- The fix dialog offers two paths: write into the file, or keep it untouched
+  and store the proxy settings in an app-managed companion config that
+  references the original via wireproxy's `WGConfig` include — the original
+  keeps working with standard WireGuard clients. Companions live in
+  Application Support, contain no secrets, are deleted with their profile,
+  and a launch-time sweep removes any orphans
 
 ## [1.1.0] - 2026-07-16
 

@@ -42,6 +42,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         manager.onPortConflict   = { [weak self] addr in self?.showPortConflictAlert(addr) }
 
         manager.reapOrphanedProcess()
+        sweepOrphanedCompanions()
         fetchWireproxyVersion()
         restoreConfig()
     }
@@ -135,18 +136,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         activate()
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        guard ensureValidConfig(at: url) else { return }
+        guard let resolved = resolveValidConfig(at: url) else { return }
         let wasRunning: Bool
         switch manager.state {
         case .connected, .reconnecting: wasRunning = true
         case .disconnected:             wasRunning = false
         }
-        setConfig(url)
+        setConfig(resolved)
         if wasRunning { manager.restart() }
     }
 
     private func setConfig(_ url: URL) {
-        warnIfConfigPermissive(url)
+        // The private key lives in the referenced original when this is a
+        // companion config; that's the file whose permissions matter.
+        let sensitiveFile = referencedConfigPath(of: url).map { URL(fileURLWithPath: $0) } ?? url
+        warnIfConfigPermissive(sensitiveFile)
         manager.configURL = url
         configNameMenuItem.title = "Config: \(url.lastPathComponent)"
         configNameMenuItem.isHidden = false
@@ -162,9 +166,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else { return }
 
-        guard ensureValidConfig(at: url) else { return }
+        guard let resolved = resolveValidConfig(at: url) else { return }
 
-        setConfig(url)
+        setConfig(resolved)
         manager.start()
     }
 
@@ -223,14 +227,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         guard FileManager.default.fileExists(atPath: path) else {
             showAlert("Config file not found:\n\(url.lastPathComponent)")
-            var profiles = savedProfiles()
-            profiles.removeAll { $0 == path }
-            UserDefaults.standard.set(profiles, forKey: "configProfiles")
-            refreshProfilesMenu()
+            removeProfileEntry(path)
             return
         }
 
-        guard ensureValidConfig(at: url) else { return }
+        // A companion whose original vanished is unusable — clean up both.
+        if let ref = referencedConfigPath(of: url), !FileManager.default.fileExists(atPath: ref) {
+            showAlert("Original WireGuard config not found:\n\(ref)")
+            removeProfileEntry(path)
+            deleteCompanionIfOwned(path)
+            return
+        }
+
+        guard let resolved = resolveValidConfig(at: url) else { return }
 
         let wasRunning: Bool
         switch manager.state {
@@ -238,8 +247,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         case .disconnected:             wasRunning = false
         }
 
-        setConfig(url)
+        setConfig(resolved)
         if wasRunning { manager.restart() }
+    }
+
+    private func removeProfileEntry(_ path: String) {
+        var profiles = savedProfiles()
+        profiles.removeAll { $0 == path }
+        UserDefaults.standard.set(profiles, forKey: "configProfiles")
+        refreshProfilesMenu()
     }
 
     @objc private func removeActiveProfile() {
@@ -265,6 +281,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             UserDefaults.standard.removeObject(forKey: "lastConfigPath")
             refreshProfilesMenu()
         }
+        deleteCompanionIfOwned(path)
     }
 
     // MARK: - Connection
@@ -504,31 +521,40 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     /// Validate the config, offering to fix a missing/incomplete proxy
-    /// section in place. Returns true when the config is usable.
-    private func ensureValidConfig(at url: URL) -> Bool {
+    /// section. Returns the config URL to actually use — the original when
+    /// fixed in place, a companion when the user keeps the file untouched —
+    /// or nil when unusable.
+    private func resolveValidConfig(at url: URL) -> URL? {
         switch configIssue(at: url) {
         case nil:
-            return true
+            return url
         case .fatal(let message):
             showAlert("Invalid config: \(message)")
-            return false
+            return nil
         case .missingProxy:
-            guard offerProxyFix(at: url, existingSection: nil) else { return false }
-            return ensureValidConfig(at: url)
+            guard let fixed = offerProxyFix(at: url, existingSection: nil) else { return nil }
+            return resolveValidConfig(at: fixed)
         case .missingBindAddress(let section):
-            guard offerProxyFix(at: url, existingSection: section) else { return false }
-            return ensureValidConfig(at: url)
+            guard let fixed = offerProxyFix(at: url, existingSection: section) else { return nil }
+            return resolveValidConfig(at: fixed)
         }
     }
 
-    private func offerProxyFix(at url: URL, existingSection: String?) -> Bool {
+    /// Returns the config URL to use after the fix, or nil if cancelled.
+    private func offerProxyFix(at url: URL, existingSection: String?) -> URL? {
+        // Never offer a companion for a file the app already manages.
+        let offerCompanion = !isCompanion(url)
+
         let alert = NSAlert()
         if let existingSection {
             alert.messageText = "Proxy Section Incomplete"
-            alert.informativeText = "The [\(existingSection.capitalized)] section in \(url.lastPathComponent) has no BindAddress, which wireproxy requires. WireProxyMenu can add one so apps can connect through 127.0.0.1 on the port below. The file will be modified."
+            alert.informativeText = "The [\(existingSection.capitalized)] section in \(url.lastPathComponent) has no BindAddress, which wireproxy requires. WireProxyMenu can add one so apps can connect through 127.0.0.1 on the port below."
         } else {
             alert.messageText = "No Proxy Section"
-            alert.informativeText = "\(url.lastPathComponent) is a plain WireGuard config with no proxy section. WireProxyMenu can add a SOCKS5 proxy so apps can connect through 127.0.0.1 on the port below. The file will be modified."
+            alert.informativeText = "\(url.lastPathComponent) is a plain WireGuard config with no proxy section. WireProxyMenu can add a SOCKS5 proxy so apps can connect through 127.0.0.1 on the port below."
+        }
+        if offerCompanion {
+            alert.informativeText += "\n\n“Add to This File” writes it into the config — the file will then no longer import into standard WireGuard apps. “Keep File Untouched” stores the proxy settings in a small companion file managed by this app."
         }
         alert.alertStyle = .informational
 
@@ -538,22 +564,33 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         portField.placeholderString = "Port (1–65535)"
         alert.accessoryView = portField
 
-        alert.addButton(withTitle: existingSection == nil ? "Add SOCKS5 Proxy" : "Add BindAddress")
+        alert.addButton(withTitle: "Add to This File")
+        if offerCompanion {
+            alert.addButton(withTitle: "Keep File Untouched")
+        }
         alert.addButton(withTitle: "Cancel")
         activate()
         alert.window.initialFirstResponder = portField
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        let response = alert.runModal()
+
+        let addInPlace = response == .alertFirstButtonReturn
+        let useCompanion = offerCompanion && response == .alertSecondButtonReturn
+        guard addInPlace || useCompanion else { return nil }
 
         guard let port = UInt16(portField.stringValue.trimmingCharacters(in: .whitespaces)), port > 0 else {
             showAlert("“\(portField.stringValue)” is not a valid port number.")
-            return false
+            return nil
+        }
+
+        if useCompanion {
+            return createCompanion(for: url, port: port)
         }
 
         let bindLine = "BindAddress = 127.0.0.1:\(port)"
         if let existingSection {
-            return insertLine(bindLine, afterSectionHeader: existingSection, in: url)
+            return insertLine(bindLine, afterSectionHeader: existingSection, in: url) ? url : nil
         } else {
-            return appendToConfig("\n[Socks5]\n\(bindLine)\n", at: url)
+            return appendToConfig("\n[Socks5]\n\(bindLine)\n", at: url) ? url : nil
         }
     }
 
@@ -603,6 +640,93 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
+    // MARK: - Companion configs
+    //
+    // A companion is a small app-managed wireproxy config that references
+    // the user's untouched WireGuard config via wireproxy's WGConfig
+    // include, and adds the proxy section. Companions contain no secrets.
+    // Invariant: a companion exists only while a profile points at it.
+
+    private var companionDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("WireProxyMenu", isDirectory: true)
+    }
+
+    private func isCompanion(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(companionDirectory.standardizedFileURL.path + "/")
+    }
+
+    /// The root-level WGConfig value, resolved the way wireproxy resolves it
+    /// (a bare filename is relative to the config's own directory).
+    private func referencedConfigPath(of url: URL) -> String? {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        for rawLine in content.components(separatedBy: .newlines) {
+            var line = rawLine
+            if let comment = line.firstIndex(where: { $0 == "#" || $0 == ";" }) {
+                line = String(line[..<comment])
+            }
+            line = line.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if line.hasPrefix("[") { return nil }  // sections begin; root keys are over
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces).lowercased()
+            if key == "wgconfig" {
+                var value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+                if !value.contains("/") {
+                    value = url.deletingLastPathComponent().appendingPathComponent(value).path
+                }
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// Companion path for an original config: named after it, reused when it
+    /// already references the same original, uniqued otherwise.
+    private func companionURL(for original: URL) -> URL {
+        let base = original.deletingPathExtension().lastPathComponent
+        let ext = original.pathExtension.isEmpty ? "conf" : original.pathExtension
+        var candidate = companionDirectory.appendingPathComponent("\(base).\(ext)")
+        var index = 2
+        while FileManager.default.fileExists(atPath: candidate.path),
+              referencedConfigPath(of: candidate) != original.path {
+            candidate = companionDirectory.appendingPathComponent("\(base)-\(index).\(ext)")
+            index += 1
+        }
+        return candidate
+    }
+
+    private func createCompanion(for original: URL, port: UInt16) -> URL? {
+        do {
+            try FileManager.default.createDirectory(at: companionDirectory, withIntermediateDirectories: true)
+            let companion = companionURL(for: original)
+            let content = "WGConfig = \(original.path)\n\n[Socks5]\nBindAddress = 127.0.0.1:\(port)\n"
+            try content.write(to: companion, atomically: true, encoding: .utf8)
+            return companion
+        } catch {
+            showAlert("Could not create companion config: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func deleteCompanionIfOwned(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        if isCompanion(url) {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Delete any companion no profile points at — makes accumulation
+    /// structurally impossible regardless of how a reference was lost.
+    private func sweepOrphanedCompanions() {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: companionDirectory, includingPropertiesForKeys: nil) else { return }
+        let referenced = Set(savedProfiles().map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+        for file in files where !referenced.contains(file.standardizedFileURL.path) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
     /// Configs contain WireGuard private keys; offer to lock down files that
     /// other users on the machine can read. "Ignore" is remembered per path.
     private func warnIfConfigPermissive(_ url: URL) {
@@ -642,8 +766,36 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             return .fatal("Could not read file.")
         }
+        let keysBySection = sectionKeys(of: content)
 
-        // Section-aware INI walk so commented-out keys don't count.
+        // A companion config points at the real WireGuard config via
+        // wireproxy's WGConfig include — [Interface]/[Peer] live there.
+        var wgKeys = keysBySection
+        if let refPath = referencedConfigPath(of: url) {
+            guard let refContent = try? String(contentsOf: URL(fileURLWithPath: refPath), encoding: .utf8) else {
+                return .fatal("Referenced WireGuard config not found:\n\(refPath)")
+            }
+            wgKeys = sectionKeys(of: refContent)
+        }
+
+        guard let interface = wgKeys["interface"] else { return .fatal("Missing [Interface] section.") }
+        guard interface.contains("privatekey") else { return .fatal("Missing PrivateKey in [Interface].") }
+        guard let peer = wgKeys["peer"] else { return .fatal("Missing [Peer] section.") }
+        guard peer.contains("endpoint") else { return .fatal("Missing Endpoint in [Peer].") }
+
+        // Proxy sections are always read from the outer file.
+        let proxySections = ["socks5", "http", "sni"].filter { keysBySection[$0] != nil }
+        if proxySections.isEmpty {
+            return .missingProxy
+        }
+        if !proxySections.contains(where: { keysBySection[$0]?.contains("bindaddress") == true }) {
+            return .missingBindAddress(proxySections[0])
+        }
+        return nil
+    }
+
+    /// Section-aware INI walk so commented-out keys don't count.
+    private func sectionKeys(of content: String) -> [String: Set<String>] {
         var keysBySection = [String: Set<String>]()
         var currentSection = ""
         for rawLine in content.components(separatedBy: .newlines) {
@@ -666,19 +818,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 keysBySection[currentSection, default: []].insert(key)
             }
         }
-
-        guard let interface = keysBySection["interface"] else { return .fatal("Missing [Interface] section.") }
-        guard interface.contains("privatekey") else { return .fatal("Missing PrivateKey in [Interface].") }
-        guard let peer = keysBySection["peer"] else { return .fatal("Missing [Peer] section.") }
-        guard peer.contains("endpoint") else { return .fatal("Missing Endpoint in [Peer].") }
-
-        let proxySections = ["socks5", "http", "sni"].filter { keysBySection[$0] != nil }
-        if proxySections.isEmpty {
-            return .missingProxy
-        }
-        if !proxySections.contains(where: { keysBySection[$0]?.contains("bindaddress") == true }) {
-            return .missingBindAddress(proxySections[0])
-        }
-        return nil
+        return keysBySection
     }
 }

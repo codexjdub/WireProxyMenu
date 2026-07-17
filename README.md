@@ -91,7 +91,12 @@ Built with [Claude](https://claude.ai)
 
 ## Config format
 
-Your `.conf` file must be a valid WireGuard config with a wireproxy proxy section. If you load a plain WireGuard config (e.g. one exported by your VPN provider), the app offers to add the `[Socks5]` section for you — pick a port and it's written into the file. Example:
+Your `.conf` file must be a valid WireGuard config with a wireproxy proxy section. If you load a plain WireGuard config (e.g. one exported by your VPN provider), the app offers to add the `[Socks5]` section for you — pick a port and choose where it goes:
+
+- **Add to This File** writes the section into your config. Simplest, but the file will no longer import into standard WireGuard clients (they reject wireproxy's extra sections).
+- **Keep File Untouched** stores the proxy settings in a small companion file managed by the app (in `~/Library/Application Support/WireProxyMenu/`), which references your original via wireproxy's `WGConfig` include. Your original keeps working everywhere, and edits to it are picked up automatically on the next connect. Note: tunnel health monitoring (`CheckAlive`) isn't available this way, since wireproxy reads that setting from the original file.
+
+Example:
 
 ```ini
 [Interface]
