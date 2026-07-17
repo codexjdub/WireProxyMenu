@@ -91,7 +91,7 @@ Built with [Claude](https://claude.ai)
 
 ## Config format
 
-Your `.conf` file must be a valid WireGuard config with a wireproxy proxy section. Example:
+Your `.conf` file must be a valid WireGuard config with a wireproxy proxy section. If you load a plain WireGuard config (e.g. one exported by your VPN provider), the app offers to add the `[Socks5]` section for you — pick a port and it's written into the file. Example:
 
 ```ini
 [Interface]

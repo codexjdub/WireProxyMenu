@@ -21,6 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   permissions fix (chmod 600), since configs contain WireGuard private keys;
   "Ignore" is remembered per file
 - README documents tunnel health, `CheckAlive` setup, and the exit IP line
+- Loading a plain WireGuard config (no proxy section) now offers to add a
+  `[Socks5]` section with a chosen port instead of just rejecting the file;
+  a proxy section missing its `BindAddress` gets the same treatment. The
+  suggested port is 1080 only if it's actually free, otherwise the next
+  free port
 
 ## [1.1.0] - 2026-07-16
 

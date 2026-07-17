@@ -135,10 +135,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         activate()
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        if let error = validateConfig(at: url) {
-            showAlert("Invalid config: \(error)")
-            return
-        }
+        guard ensureValidConfig(at: url) else { return }
         let wasRunning: Bool
         switch manager.state {
         case .connected, .reconnecting: wasRunning = true
@@ -165,10 +162,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let url = URL(fileURLWithPath: path)
         guard FileManager.default.fileExists(atPath: path) else { return }
 
-        if let error = validateConfig(at: url) {
-            showAlert("Saved config is invalid:\n\(error)")
-            return
-        }
+        guard ensureValidConfig(at: url) else { return }
 
         setConfig(url)
         manager.start()
@@ -236,10 +230,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             return
         }
 
-        if let error = validateConfig(at: url) {
-            showAlert("Invalid config: \(error)")
-            return
-        }
+        guard ensureValidConfig(at: url) else { return }
 
         let wasRunning: Bool
         switch manager.state {
@@ -506,6 +497,112 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         alert.runModal()
     }
 
+    private enum ConfigIssue {
+        case fatal(String)                 // structurally broken; user must fix
+        case missingProxy                  // no proxy section at all
+        case missingBindAddress(String)    // proxy section exists but has no BindAddress
+    }
+
+    /// Validate the config, offering to fix a missing/incomplete proxy
+    /// section in place. Returns true when the config is usable.
+    private func ensureValidConfig(at url: URL) -> Bool {
+        switch configIssue(at: url) {
+        case nil:
+            return true
+        case .fatal(let message):
+            showAlert("Invalid config: \(message)")
+            return false
+        case .missingProxy:
+            guard offerProxyFix(at: url, existingSection: nil) else { return false }
+            return ensureValidConfig(at: url)
+        case .missingBindAddress(let section):
+            guard offerProxyFix(at: url, existingSection: section) else { return false }
+            return ensureValidConfig(at: url)
+        }
+    }
+
+    private func offerProxyFix(at url: URL, existingSection: String?) -> Bool {
+        let alert = NSAlert()
+        if let existingSection {
+            alert.messageText = "Proxy Section Incomplete"
+            alert.informativeText = "The [\(existingSection.capitalized)] section in \(url.lastPathComponent) has no BindAddress, which wireproxy requires. WireProxyMenu can add one so apps can connect through 127.0.0.1 on the port below. The file will be modified."
+        } else {
+            alert.messageText = "No Proxy Section"
+            alert.informativeText = "\(url.lastPathComponent) is a plain WireGuard config with no proxy section. WireProxyMenu can add a SOCKS5 proxy so apps can connect through 127.0.0.1 on the port below. The file will be modified."
+        }
+        alert.alertStyle = .informational
+
+        let portField = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        // Suggest 1080 only if it's actually free right now.
+        portField.stringValue = String(manager.availablePort(preferring: 1080))
+        portField.placeholderString = "Port (1–65535)"
+        alert.accessoryView = portField
+
+        alert.addButton(withTitle: existingSection == nil ? "Add SOCKS5 Proxy" : "Add BindAddress")
+        alert.addButton(withTitle: "Cancel")
+        activate()
+        alert.window.initialFirstResponder = portField
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+
+        guard let port = UInt16(portField.stringValue.trimmingCharacters(in: .whitespaces)), port > 0 else {
+            showAlert("“\(portField.stringValue)” is not a valid port number.")
+            return false
+        }
+
+        let bindLine = "BindAddress = 127.0.0.1:\(port)"
+        if let existingSection {
+            return insertLine(bindLine, afterSectionHeader: existingSection, in: url)
+        } else {
+            return appendToConfig("\n[Socks5]\n\(bindLine)\n", at: url)
+        }
+    }
+
+    private func appendToConfig(_ block: String, at url: URL) -> Bool {
+        guard var content = try? String(contentsOf: url, encoding: .utf8) else {
+            showAlert("Could not read \(url.lastPathComponent).")
+            return false
+        }
+        if !content.hasSuffix("\n") { content += "\n" }
+        content += block
+        return writeConfig(content, to: url)
+    }
+
+    private func insertLine(_ line: String, afterSectionHeader section: String, in url: URL) -> Bool {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            showAlert("Could not read \(url.lastPathComponent).")
+            return false
+        }
+        var lines = content.components(separatedBy: "\n")
+        for (index, rawLine) in lines.enumerated() {
+            var stripped = rawLine
+            if let comment = stripped.firstIndex(where: { $0 == "#" || $0 == ";" }) {
+                stripped = String(stripped[..<comment])
+            }
+            stripped = stripped.trimmingCharacters(in: .whitespaces).lowercased()
+            if stripped == "[\(section)]" {
+                lines.insert(line, at: index + 1)
+                return writeConfig(lines.joined(separator: "\n"), to: url)
+            }
+        }
+        showAlert("Could not find the [\(section.capitalized)] section in \(url.lastPathComponent).")
+        return false
+    }
+
+    private func writeConfig(_ content: String, to url: URL) -> Bool {
+        // Atomic writes replace the file, so re-apply its permissions.
+        let perms = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber
+        do {
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            if let perms {
+                try? FileManager.default.setAttributes([.posixPermissions: perms], ofItemAtPath: url.path)
+            }
+            return true
+        } catch {
+            showAlert("Could not update \(url.lastPathComponent): \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// Configs contain WireGuard private keys; offer to lock down files that
     /// other users on the machine can read. "Ignore" is remembered per path.
     private func warnIfConfigPermissive(_ url: URL) {
@@ -541,9 +638,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    private func validateConfig(at url: URL) -> String? {
+    private func configIssue(at url: URL) -> ConfigIssue? {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            return "Could not read file."
+            return .fatal("Could not read file.")
         }
 
         // Section-aware INI walk so commented-out keys don't count.
@@ -570,12 +667,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             }
         }
 
-        guard let interface = keysBySection["interface"] else { return "Missing [Interface] section." }
-        guard interface.contains("privatekey") else { return "Missing PrivateKey in [Interface]." }
-        guard let peer = keysBySection["peer"] else { return "Missing [Peer] section." }
-        guard peer.contains("endpoint") else { return "Missing Endpoint in [Peer]." }
-        guard ["socks5", "http", "sni"].contains(where: { keysBySection[$0] != nil }) else {
-            return "Missing proxy section — add [Socks5], [Http], or [SNI] with BindAddress."
+        guard let interface = keysBySection["interface"] else { return .fatal("Missing [Interface] section.") }
+        guard interface.contains("privatekey") else { return .fatal("Missing PrivateKey in [Interface].") }
+        guard let peer = keysBySection["peer"] else { return .fatal("Missing [Peer] section.") }
+        guard peer.contains("endpoint") else { return .fatal("Missing Endpoint in [Peer].") }
+
+        let proxySections = ["socks5", "http", "sni"].filter { keysBySection[$0] != nil }
+        if proxySections.isEmpty {
+            return .missingProxy
+        }
+        if !proxySections.contains(where: { keysBySection[$0]?.contains("bindaddress") == true }) {
+            return .missingBindAddress(proxySections[0])
         }
         return nil
     }

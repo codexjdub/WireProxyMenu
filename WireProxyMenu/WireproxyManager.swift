@@ -351,6 +351,19 @@ class WireproxyManager {
         return ip
     }
 
+    /// The preferred port if it's free, else the next free port above it
+    /// (falling back to a kernel-assigned one). Used to suggest a sensible
+    /// default in the proxy-fix dialog.
+    func availablePort(preferring preferred: UInt16) -> UInt16 {
+        var candidate = preferred
+        for _ in 0..<100 {
+            if !isPortInUse("127.0.0.1:\(candidate)") { return candidate }
+            guard candidate < UInt16.max else { break }
+            candidate += 1
+        }
+        return findFreePort() ?? preferred
+    }
+
     private func findFreePort() -> UInt16? {
         let sock = socket(AF_INET, SOCK_STREAM, 0)
         guard sock >= 0 else { return nil }
